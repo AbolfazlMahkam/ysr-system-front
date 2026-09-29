@@ -1,0 +1,78 @@
+name: Deploy to GitHub Pages
+
+# Every push to main publishes a new build. `workflow_dispatch` allows a
+# re-deploy of the current commit without pushing a no-op commit.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time. Queued rather than cancelled, so a release is never
+# left half-applied to the live site.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Fails here rather than at the end of the run if Pages was never
+      # enabled for this repository (Settings -> Pages -> Source: GitHub Actions).
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      # Vite inlines VITE_* at build time, so these are injected here rather
+      # than read at runtime by the deployed site.
+      #
+      # Defaults match the committed .env.production. Override them with
+      # repository variables (Settings -> Secrets and variables -> Actions ->
+      # Variables) without editing this file:
+      #   VITE_BASE_PATH       "/"                      for the custom domain
+      #   VITE_API_BASE_URL    "https://api..."         backend origin
+      #   VITE_GOOGLE_CLIENT_ID "<id>.apps.googleusercontent.com"
+      - name: Build
+        env:
+          VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH || '/ysr-system-front/' }}
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL || 'https://api.rohanian-ysr.ir' }}
+          VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
+        run: npm run build
+
+      # Writing the CNAME makes Pages serve the custom domain instead of the
+      # project URL. Only done when CUSTOM_DOMAIN is set, so the project site
+      # keeps working until DNS is actually pointed at GitHub.
+      - name: Write CNAME
+        if: ${{ vars.CUSTOM_DOMAIN != '' }}
+        run: echo "${{ vars.CUSTOM_DOMAIN }}" > dist/CNAME
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
