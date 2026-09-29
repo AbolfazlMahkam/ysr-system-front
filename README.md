@@ -527,8 +527,10 @@ VITE_GOOGLE_CLIENT_ID=your_google_client_id_here.apps.googleusercontent.com
 npm run dev              # Start Vite dev server at localhost:4000/ysr-system-front/
 
 # Building
-npm run build           # Type-check and build for production
+npm run build           # Custom-domain build (base "/") for panel.rohanian-ysr.ir
                         # Output: dist/
+npm run build:pages     # Project-site build (base "/ysr-system-front/")
+                        # Output: dist-pages/
 
 # Preview
 npm run preview         # Preview production build locally
@@ -672,29 +674,29 @@ Use browser DevTools Network tab to:
 
 ### GitHub Pages (current target)
 
-The app is published to GitHub Pages by `.github/workflows/deploy.yml`. Every
-push to `main` builds and deploys; **Settings → Pages → Source** must be set to
-**GitHub Actions** first.
+The app is published to **two** hosts, which need different base paths, so there
+are two build targets:
 
-| Mode | URL | `VITE_BASE_PATH` |
-| --- | --- | --- |
-| Project site (active) | `https://abolfazlmahkam.github.io/ysr-system-front` | `/ysr-system-front/` |
-| Custom domain (prepared) | `https://panel.rohanian-ysr.ir` | `/` |
+| Host | URL | Base | Built by |
+| --- | --- | --- | --- |
+| Arvancdn (custom domain) | `https://panel.rohanian-ysr.ir` | `/` | `npm run build` → `dist/` |
+| GitHub Pages (project site) | `https://abolfazlmahkam.github.io/ysr-system-front` | `/ysr-system-front/` | `npm run build:pages` → `dist-pages/` (CI) |
 
 A project site is served from a **sub-path**, so every asset URL, the router
 basename and the post-refresh redirect all have to carry `/ysr-system-front/`.
-That is what `VITE_BASE_PATH` controls; it feeds `base` in `vite.config.ts`,
-which Vite exposes to the app as `import.meta.env.BASE_URL`. Changing hosting
-means changing that one value — no component edits.
+The custom domain is served from the **root**. That is the only difference
+between the two builds — no component code changes. Changing a base means
+changing one value, not editing components.
 
-To run a local build that matches production exactly:
+To reproduce a build locally:
 
 ```bash
-npm run build        # writes dist/
-npm run preview      # serves dist/ at the configured base
+npm run build        # custom domain  -> dist/
+npm run build:pages  # project site   -> dist-pages/
+npm run preview      # serves the most recent build at its configured base
 ```
 
-Local development uses the same base path, so `npm run dev` now serves the app
+Local development uses the project-site base, so `npm run dev` serves the app
 at <http://localhost:4000/ysr-system-front/> rather than `http://localhost:4000/`.
 That is intentional: it makes the sub-path layout that only exists in production
 visible during development.
@@ -705,34 +707,38 @@ a byte-identical copy of `index.html` as `404.html`, which Pages serves *at the
 requested URL* — react-router then sees the original path and boots normally.
 Unknown URLs land on the catch-all route in `src/pages/NotFoundPage.tsx`.
 
-### Cutover to `panel.rohanian-ysr.ir`
+### Publishing to `panel.rohanian-ysr.ir`
 
-The domain is fully wired up; only the switch is left. No code changes are
-needed — add these **repository variables** (Settings → Secrets and variables →
-Actions → Variables) and push to `main`:
+The domain is served by **Arvancdn**, not GitHub Pages — its DNS points at
+`185.143.233.131` / `185.143.234.131`, not at GitHub. So the domain is *not* a
+Pages custom domain and **no CNAME is involved**. It is a static copy of `dist/`
+uploaded to that host.
 
-| Variable | Value |
-| --- | --- |
-| `VITE_BASE_PATH` | `/` |
-| `CUSTOM_DOMAIN` | `panel.rohanian-ysr.ir` |
+That also means the two URLs coexist: the project site keeps its own
+`/ysr-system-front/` base and the domain gets `/`. Neither displaces the other.
 
-`CUSTOM_DOMAIN` makes the workflow write a `dist/CNAME`, which is what makes
-Pages serve the custom domain. While it is unset, no CNAME is emitted and the
-project URL keeps working — so you can verify everything on the GitHub domain
-first and flip over without a risky window.
+To publish an update to the domain:
 
-DNS, at the registrar for `rohanian-ysr.ir`:
+```bash
+npm run build    # -> dist/ , base "/"
+```
 
-| Type | Name | Value |
-| --- | --- | --- |
-| `CNAME` | `panel` | `abolfazlmahkam.github.io` |
+Then upload the **contents of `dist/`** to the document root of the Arvanchn
+host. The whole directory matters, including the `assets/` folder and
+`404.html` — uploading only `index.html` leaves every asset 404ing, which is the
+exact failure mode a base mismatch produces.
 
-Wait for DNS to propagate, then confirm **Settings → Pages → Custom domain**
-reports the domain as verified and enable **Enforce HTTPS**.
+> **How the two bases are kept apart.** `base` is baked into the bundle at build
+> time, so a single build can only target one host.
+> `.env.production` sets `VITE_BASE_PATH=/` and drives `npm run build`.
+> `npm run build:pages` passes `--base=/ysr-system-front/`, which overrides that
+> file, and the Pages workflow injects `VITE_BASE_PATH` as a real environment
+> variable, which takes precedence over the file in `loadEnv`. Editing
+> `.env.production` therefore does **not** disturb the Pages deploy.
 
-Note that `base: "./"` is *not* used for the domain swap. This app has deep
-routes, and a relative base would resolve assets against the current path
-segment (`/admin/assets/…`); an explicit `/` is correct.
+Note that `base: "./"` is *not* used for the domain. This app has deep routes,
+and a relative base would resolve assets against the current path segment
+(`/admin/assets/…`); an explicit `/` is correct.
 
 ### Backend requirements
 
@@ -773,8 +779,9 @@ Vite inlines `VITE_*` variables into the bundle at **build time** — they are
 public, never put secrets in them, and changing one requires a rebuild. See
 `.env.production` for the deployed values and `.env.example` for local ones.
 
-- `VITE_BASE_PATH` - Public base path (`/ysr-system-front/` or `/`)
-- `VITE_API_BASE_URL` - Production backend origin
+- `VITE_BASE_PATH` - Public base path (`/` for the custom domain,
+  `/ysr-system-front/` for the project site)
+- `VITE_API_BASE_URL` - Backend origin (`https://api.rohanian-ysr.ir`)
 - `VITE_GOOGLE_CLIENT_ID` - Google OAuth client ID
 
 

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host",
     "build": "vite build",
+    "build:pages": "vite build --base=/ysr-system-front/ --outDir dist-pages",
     "type-check": "tsc -b",
     "lint": "eslint .",
     "preview": "vite preview"
