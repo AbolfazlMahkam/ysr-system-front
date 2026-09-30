@@ -728,6 +728,37 @@ host. The whole directory matters, including the `assets/` folder and
 `404.html` — uploading only `index.html` leaves every asset 404ing, which is the
 exact failure mode a base mismatch produces.
 
+> **Which directory? `dist/`, never `dist-pages/`.** This has been the cause of
+> the outage twice, so the build states its destination rather than relying on
+> memory. Every build writes `_DEPLOY_TARGET.txt` into its output and prints the
+> target to the log:
+>
+> ```
+>  [deploy target] https://panel.rohanian-ysr.ir (base /)              <- dist/
+>  [deploy target] https://abolfazlmahkam.github.io/ysr-system-front   <- dist-pages/
+> ```
+>
+> Uploading `dist-pages/` here yields a page that loads and then 404s on every
+> asset, because its `index.html` asks for `/ysr-system-front/assets/...` while
+> the files sit in `/assets/`.
+
+**Always verify after uploading.** This one command catches a bad publish
+immediately, without needing to open the browser:
+
+```bash
+curl -s https://panel.rohanian-ysr.ir/ | grep -o 'src="[^"]*index-[^"]*\.js"'
+```
+
+Correct output starts with `src="/assets/` — no `/ysr-system-front/` prefix:
+
+```
+src="/assets/index-DABTQWnS.js"          OK
+src="/ysr-system-front/assets/index-*.js" WRONG BUNDLE — you uploaded dist-pages/
+```
+
+Note the CSS file is a poor signal: its hash is identical in both builds, because
+`base` does not affect CSS. Only the `src=` script path distinguishes them.
+
 ### CI builds both targets on every push
 
 `.github/workflows/deploy.yml` builds and verifies **both** artifacts on every
@@ -737,7 +768,12 @@ same commit and can never be the wrong one:
 | Job | Output | Destination |
 | --- | --- | --- |
 | `build` | `dist-pages/` (base `/ysr-system-front/`) | deployed to GitHub Pages |
-| `build-domain` | `dist/` (base `/`), attached to the run as the `dist-domain` artifact | upload to Arvancdn |
+| `build-domain` | `dist/` (base `/`), attached as `UPLOAD-THIS-ONE-panel-rohanian-ysr.ir-dist` | upload to Arvancdn |
+
+A run therefore contains two zip files that both look like a release. **Download
+the one named `UPLOAD-THIS-ONE-panel-rohanian-ysr.ir-dist`** and upload its
+contents to the Arvancdn document root. The other one (`github-pages`) is the
+Pages bundle and belongs on GitHub, never on the domain.
 
 `build-domain` attaches `dist/` as a downloadable artifact on every run, so the
 correct bundle is always available even if the upload is not configured.
@@ -747,7 +783,13 @@ It can also publish for you. To enable push-to-live, set repository **variable**
 `ARVAN_PASSWORD` (Settings -> Secrets and variables -> Actions). The step is
 inert until that variable is set, so merging this cannot unexpectedly overwrite
 the live site. It mirrors with `--delete`, meaning the published directory is
-always exactly the artifact CI verified.
+always exactly the artifact CI verified, and then re-fetches the live
+`index.html` to confirm the domain is serving the root-based bundle — so a bad
+publish fails the run instead of being discovered in a browser.
+
+This is the only mechanism that can fix the domain from a push. Arvancdn is not
+GitHub and its DNS points elsewhere, so with the upload left manual, every
+release depends on a person choosing the right zip.
 
 `check` (lint + type-check) is a hard gate: `deploy` depends on it, so a push
 that fails either one never reaches either host. It currently passes, but the

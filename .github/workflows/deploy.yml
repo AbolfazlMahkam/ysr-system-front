@@ -139,16 +139,23 @@ jobs:
 
       # Attached to the run either way, so the correct bundle is always available
       # even when the upload below is not configured.
+      #
+      # The name is deliberately shouty. The two artifacts in a run are otherwise
+      # easy to confuse, and uploading the Pages one to the domain is what caused
+      # the 404s: both are zip files of hashed assets, and index.html only
+      # reveals the mistake after it is already live. Downloading this one and
+      # uploading its contents to the document root is the whole deploy.
       - name: Archive the custom-domain bundle
         uses: actions/upload-artifact@v4
         with:
-          name: dist-domain
+          name: UPLOAD-THIS-ONE-panel-rohanian-ysr.ir-dist
           path: dist/
           retention-days: 30
 
       # Opt-in publish. To enable, set repository variable ARVAN_DEPLOY_ENABLED=true
       # and secrets ARVAN_HOST / ARVAN_USER / ARVAN_PASSWORD (Settings -> Secrets
-      # and variables -> Actions).
+      # and variables -> Actions). This is the only way a push can fix the live
+      # domain on its own — Arvancdn is not GitHub, so nothing else can reach it.
       #
       # `mirror --delete` is deliberate: leftover hashed files from a previous
       # release are dead weight, and keeping the directory exactly equal to the
@@ -158,6 +165,9 @@ jobs:
       # ARVAN_HOST is the host[:port] only, with no scheme and no trailing path.
       # If the account is FTPS-only, change `ftp:ssl-allow no` to
       # `ftp:ssl-force yes` below.
+      #
+      # After uploading, the build verifies its own destination over HTTP, so a
+      # bad publish fails the run instead of being discovered in the browser.
       - name: Publish to Arvancdn
         if: ${{ vars.ARVAN_DEPLOY_ENABLED == 'true' }}
         env:
@@ -175,6 +185,22 @@ jobs:
             mirror -R --delete --verbose dist/ .;
             bye;
           "
+          # Confirm the live document root now serves the root-based bundle.
+          # Retries briefly: the CDN can serve a stale index.html for a moment
+          # after the upload.
+          for i in 1 2 3 4 5 6; do
+            served=$(curl -s "https://panel.rohanian-ysr.ir/?cb=$RANDOM$i" \
+              | grep -o 'src="[^"]*index-[^"]*\.js"' | head -1)
+            echo "  attempt $i: ${served:-<no script tag found>}"
+            case "$served" in
+              src=\"/assets/*) echo "OK: domain is serving the root-base bundle"; exit 0 ;;
+            esac
+            sleep 10
+          done
+          echo "::error::panel.rohanian-ysr.ir is not serving the root-base bundle."
+          echo "The uploaded index.html still references a sub-path. Upload the"
+          echo "contents of dist/ (NOT dist-pages/) to the document root."
+          exit 1
 
   deploy:
     needs: [check, build]
