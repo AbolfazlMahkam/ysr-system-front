@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Card,
@@ -94,11 +94,9 @@ export function ArbaeenProcessionDetail() {
 
   const isAdmin = user?.role === "admin" || user?.role === "super_admin";
 
-  useEffect(() => {
-    if (id) fetchData();
-  }, [id]);
-
-  const fetchData = async () => {
+  // Memoised so the effect below can depend on it without refetching on every
+  // render. It only reads `id`; every setter below is stable.
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true);
       const procData = await arbaeenApi.getProcession(Number(id));
@@ -119,7 +117,11 @@ export function ArbaeenProcessionDetail() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [id]);
+
+  useEffect(() => {
+    if (id) fetchData();
+  }, [id, fetchData]);
 
   const handleAssignConsultant = async () => {
     if (selectedUserIds.length === 0) {

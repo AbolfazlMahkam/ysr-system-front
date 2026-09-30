@@ -749,10 +749,11 @@ inert until that variable is set, so merging this cannot unexpectedly overwrite
 the live site. It mirrors with `--delete`, meaning the published directory is
 always exactly the artifact CI verified.
 
-> The `check` job (lint + type-check) is currently `continue-on-error` because
-> the tree carries pre-existing lint and type errors. It reports but does not
-> block, and `deploy` does not depend on it. Clear the debt, then remove the flag
-> to make it a real gate.
+`check` (lint + type-check) is a hard gate: `deploy` depends on it, so a push
+that fails either one never reaches either host. It currently passes, but the
+API layer under `src/api` is still `.js` and its response bodies are typed `any`
+via the declarations in `src/types/api.ts` — see that file for why `allowJs` makes
+things worse and how to migrate off it.
 
 > **How the two bases are kept apart.** `base` is baked into the bundle at build
 > time, so a single build can only target one host.

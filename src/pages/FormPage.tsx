@@ -275,7 +275,7 @@ export function FormPage() {
   function handleRefillForm() {
     setSubmitted(false);
     reset();
-    toast.info("فرم جدید آماده تکمیل است", { title: "پر کردن مجدد فرم" });
+    toast.info("پر کردن مجدد فرم");
   }
 
   function isFieldVisible(field: FieldDefinition): boolean {

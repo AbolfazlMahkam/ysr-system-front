@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Card,
@@ -144,11 +144,9 @@ export function ArbaeenProcessionsPage() {
     },
   });
 
-  useEffect(() => {
-    if (yearId) fetchData();
-  }, [yearId]);
-
-  const fetchData = async () => {
+  // Memoised so the effect below can depend on it without refetching on every
+  // render. It only reads `yearId`; every setter below is stable.
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true);
       const yearsData = await arbaeenApi.getYears();
@@ -158,9 +156,11 @@ export function ArbaeenProcessionsPage() {
       setYear(currentYear || null);
 
       const procData = await arbaeenApi.getProcessionsByYear(Number(yearId));
-      const procs = procData || [];
+      // Annotated because the API module is untyped JS, which would otherwise
+      // make every value below an implicit `any`.
+      const procs: ArbaeenProcession[] = procData || [];
 
-      const withConsultants = await Promise.all(
+      const withConsultants: ProcessionWithConsultants[] = await Promise.all(
         procs.map(async (proc: ArbaeenProcession) => {
           try {
             const detail = await arbaeenApi.getProcession(proc.id);
@@ -188,7 +188,11 @@ export function ArbaeenProcessionsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [yearId]);
+
+  useEffect(() => {
+    if (yearId) fetchData();
+  }, [yearId, fetchData]);
 
   const handleAddProcession = async (data: ProcessionFormData) => {
     const toastId = toast.loading("در حال ایجاد موکب...");

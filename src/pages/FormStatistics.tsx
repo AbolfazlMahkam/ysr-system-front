@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -456,10 +455,18 @@ export function FormStatistics() {
                     radius={[6, 6, 0, 0]}
                     maxBarSize={40}
                     onClick={(data) => {
-                      if (data?.rawValue) {
+                      // `rawValue` is a field of the chart datum, not of the bar
+                      // rectangle. recharts types the onClick payload as
+                      // BarRectangleItem (pure geometry) and cannot express the
+                      // generic datum, so read it from `payload`, which recharts
+                      // sets to the source datum.
+                      const rawValue = data?.payload?.rawValue as
+                        | string
+                        | undefined;
+                      if (rawValue) {
                         setSelectedProvince((prev) => ({
                           ...prev,
-                          [field.name]: data.rawValue as string,
+                          [field.name]: rawValue,
                         }));
                       }
                     }}
@@ -845,10 +852,15 @@ export function FormStatistics() {
                     radius={[6, 6, 0, 0]}
                     maxBarSize={40}
                     onClick={(data) => {
-                      if (data?.rawValue) {
+                      // See the note in the province chart above: the datum's
+                      // `rawValue` is reached through `payload`.
+                      const rawValue = data?.payload?.rawValue as
+                        | string
+                        | undefined;
+                      if (rawValue) {
                         setSelectedContinent((prev) => ({
                           ...prev,
-                          [field.name]: data.rawValue as string,
+                          [field.name]: rawValue,
                         }));
                       }
                     }}

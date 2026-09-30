@@ -4,8 +4,8 @@ import {
   useEffect,
   useRef,
   useState,
-  ReactNode,
 } from "react";
+import type { ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import authAPI from "../api/auth";
 import localStorageService from "../utiles/localStorageService";

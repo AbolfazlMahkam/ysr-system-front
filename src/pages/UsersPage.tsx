@@ -522,9 +522,6 @@ export function UsersPage() {
     return String(value ?? "");
   };
 
-  // Check if user has admin or super_admin role
-  const isSuperAdminFn = (role: string) => role === "super_admin";
-
   const hasAccess =
     currentUser?.role === "admin" || currentUser?.role === "super_admin";
 

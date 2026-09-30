@@ -19,17 +19,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Reports lint/type health without blocking a release.
+  # Hard gate. `npm run lint` and `npm run type-check` both pass, so this can
+  # block a release: it catches a bad push before it reaches either host.
   #
-  # `continue-on-error` is deliberate and temporary: the tree already carries
-  # pre-existing lint and type errors (unused vars in src/pages/RegisterPage.tsx,
-  # FormStatistics.tsx and UsersPage.tsx, and untyped .js modules under src/api and
-  # src/utiles). Wiring this as a hard gate today would turn every push red and
-  # block the deploys below, which is a worse outcome than the debt being visible.
-  # Clear the debt, then drop continue-on-error to make this a real gate.
+  # The pre-existing debt that used to fail here is fixed — unused vars in
+  # RegisterPage/UsersPage/FormStatistics, the undeclared `usersApi` import in
+  # ProfilePage, and TS7016 across the untyped `src/api` + `src/utiles` .js layer
+  # (now declared in src/types/api.ts and the matching *.d.ts files). The API
+  # layer's *bodies* are still `any`; see src/types/api.ts for the migration note.
   check:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -178,9 +177,7 @@ jobs:
           "
 
   deploy:
-    # Deliberately does NOT need `check`: that job is advisory (see above), and
-    # gating the release on pre-existing lint debt would block every deploy.
-    needs: [build]
+    needs: [check, build]
     runs-on: ubuntu-latest
     environment:
       name: github-pages
