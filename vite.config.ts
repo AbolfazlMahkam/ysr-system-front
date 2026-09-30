@@ -43,18 +43,20 @@ const DEPLOY_TARGETS: Record<
 > = {
   "/": {
     host: "https://panel.rohanian-ysr.ir",
-    where: "the document root of the Arvancdn host, as the site root",
-    notFor: "GitHub Pages (that needs the sub-path build)",
+    where:
+      "the GitHub Pages custom domain, fronted by the ArvanCloud CDN. This is the live site.",
+    notFor: "nothing — this is the only deployed build",
     note:
-      "Self-check after uploading:\n" +
-      "  curl -s https://panel.rohanian-ysr.ir/ | grep -o 'src=\"[^\"]*index-[^\"]*\\.js\"'\n" +
+      "Self-check after publishing:\n" +
+      '  curl -s https://panel.rohanian-ysr.ir/ | grep -o \'src="[^"]*index-[^"]*\\.js"\'\n' +
       "  -> must print src=\"/assets/index-....js\"  (no /ysr-system-front/ prefix)",
   },
   "/ysr-system-front/": {
-    host: "https://abolfazlmahkam.github.io/ysr-system-front",
-    where: "the GitHub Pages project site (automatic, via the Pages workflow)",
+    host: "a GitHub Pages PROJECT site with no custom domain",
+    where:
+      "only if the CNAME is removed, so Pages serves at /ysr-system-front/ instead of the domain root",
     notFor:
-      "panel.rohanian-ysr.ir — uploading this there is what causes 404s on every asset",
+      "panel.rohanian-ysr.ir — the site is published on a custom domain, so Pages serves it at the ROOT. Deploying this build there is what caused the 404s on every asset.",
   },
 };
 

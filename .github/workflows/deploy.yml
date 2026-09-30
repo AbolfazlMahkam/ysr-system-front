@@ -1,7 +1,7 @@
 name: Build and deploy
 
-# Every push to main publishes both build targets. `workflow_dispatch` allows a
-# re-deploy of the current commit without pushing a no-op commit.
+# Every push to main publishes the site. `workflow_dispatch` allows a re-deploy
+# of the current commit without pushing a no-op commit.
 on:
   push:
     branches: [main]
@@ -20,13 +20,7 @@ concurrency:
 
 jobs:
   # Hard gate. `npm run lint` and `npm run type-check` both pass, so this can
-  # block a release: it catches a bad push before it reaches either host.
-  #
-  # The pre-existing debt that used to fail here is fixed — unused vars in
-  # RegisterPage/UsersPage/FormStatistics, the undeclared `usersApi` import in
-  # ProfilePage, and TS7016 across the untyped `src/api` + `src/utiles` .js layer
-  # (now declared in src/types/api.ts and the matching *.d.ts files). The API
-  # layer's *bodies* are still `any`; see src/types/api.ts for the migration note.
+  # block a release: it catches a bad push before it reaches the site.
   check:
     runs-on: ubuntu-latest
     steps:
@@ -42,7 +36,24 @@ jobs:
       - run: npm run lint
       - run: npm run type-check
 
-  # ---- GitHub Pages project site: base "/ysr-system-front/" ----
+  # The Pages artifact IS the live site.
+  #
+  # Topology, which is the part that is easy to get wrong:
+  #
+  #   GitHub Pages  ──serves──>  panel.rohanian-ysr.ir   (the CUSTOM DOMAIN)
+  #         ▲
+  #         └── fronted by ArvanCloud purely as a CDN (caching/TLS). Arvan's
+  #             responses carry X-GitHub-Request-Id, so the origin is Pages.
+  #
+  # Because the site is published on a custom domain, Pages serves the artifact
+  # at the domain ROOT, and https://abolfazlmahkam.github.io/ysr-system-front/
+  # just 301s to the domain. There is therefore only ONE live base: "/".
+  #
+  # Deploying the sub-path build here is what caused the outage: the domain
+  # loaded index.html and then 404'd on every asset, because that index.html
+  # asks for /ysr-system-front/assets/... while Pages serves the files from
+  # /assets/. Do not swap this back to `npm run build:pages` — that build only
+  # makes sense for a project site with NO custom domain.
   build:
     runs-on: ubuntu-latest
     steps:
@@ -65,10 +76,9 @@ jobs:
       # Vite inlines VITE_* at build time, so these are injected here rather
       # than read at runtime by the deployed site.
       #
-      # This workflow produces the PROJECT-SITE build, so the base is pinned to
-      # the sub-path. Because a real env var outranks the committed
-      # .env.production, that file can keep VITE_BASE_PATH="/" (the
-      # panel.rohanian-ysr.ir build) without affecting this deploy.
+      # Stated explicitly rather than inherited from .env.production, so this job
+      # does not depend on a committed file staying correct. The base MUST be "/"
+      # because the site is served from the custom-domain root — see above.
       #
       # Overridable with repository variables (Settings -> Secrets and variables
       # -> Actions -> Variables) without editing this file:
@@ -76,131 +86,33 @@ jobs:
       #   VITE_GOOGLE_CLIENT_ID  "<id>.apps.googleusercontent.com"
       - name: Build
         env:
-          VITE_BASE_PATH: /ysr-system-front/
-          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL || 'https://api.rohanian-ysr.ir' }}
-          VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
-        run: npm run build:pages
-
-      # Belt-and-braces: the build already self-verifies via a Vite plugin, but
-      # re-asserting the expected base here means this job fails even if that
-      # plugin is ever removed or reordered.
-      - name: Verify the artifact is built for the project-site sub-path
-        run: npm run verify:dist-pages
-
-      # Do NOT set CUSTOM_DOMAIN. panel.rohanian-ysr.ir is served by Arvancdn, not
-      # by Pages, and its DNS does not point at GitHub. Emitting a CNAME would
-      # make GitHub try to serve a domain it does not control, which breaks this
-      # project site. The domain gets its own build — see the `build-domain` job.
-      - name: Write CNAME
-        if: ${{ vars.CUSTOM_DOMAIN != '' }}
-        run: echo "${{ vars.CUSTOM_DOMAIN }}" > dist-pages/CNAME
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist-pages
-
-  # ---- Arvancdn custom domain: base "/" ----
-  #
-  # The domain is hosted by Arvancdn, whose DNS does not point at GitHub, so the
-  # Pages artifact can never be published there — it is built for the sub-path and
-  # would 404 on every asset. This job produces the correct artifact on every push
-  # and attaches it to the run, so the bundle that reaches Arvancdn is always the
-  # one built for it.
-  #
-  # The publish step is opt-in. Until ARVAN_DEPLOY_ENABLED is set to "true" the
-  # artifact is produced and downloadable but nothing is uploaded, so merging this
-  # change cannot unexpectedly overwrite the live site.
-  build-domain:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build
-        env:
-          # Stated explicitly rather than inherited from .env.production, so this
-          # job does not depend on a committed file staying correct.
           VITE_BASE_PATH: /
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL || 'https://api.rohanian-ysr.ir' }}
           VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
         run: npm run build
 
+      # The build already self-verifies via a Vite plugin; re-asserting the
+      # expected base here means this job still fails if that plugin is ever
+      # removed or reordered.
       - name: Verify the artifact is built for the domain root
         run: npm run verify:dist
 
-      # Attached to the run either way, so the correct bundle is always available
-      # even when the upload below is not configured.
+      # REQUIRED, not optional. The CNAME is what binds this Pages site to
+      # panel.rohanian-ysr.ir; without it Pages serves the project-site URL and
+      # the domain keeps whatever it had before.
       #
-      # The name is deliberately shouty. The two artifacts in a run are otherwise
-      # easy to confuse, and uploading the Pages one to the domain is what caused
-      # the 404s: both are zip files of hashed assets, and index.html only
-      # reveals the mistake after it is already live. Downloading this one and
-      # uploading its contents to the document root is the whole deploy.
-      - name: Archive the custom-domain bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: UPLOAD-THIS-ONE-panel-rohanian-ysr.ir-dist
-          path: dist/
-          retention-days: 30
+      # Always written, with the known domain as the default. The previous
+      # version only wrote it when the CUSTOM_DOMAIN repository variable was
+      # non-empty, so clearing that variable would have silently un-bound the
+      # domain and quietly reverted the site to the project-site URL. Set
+      # CUSTOM_DOMAIN to publish somewhere else.
+      - name: Write CNAME
+        run: echo "${{ vars.CUSTOM_DOMAIN || 'panel.rohanian-ysr.ir' }}" > dist/CNAME
 
-      # Opt-in publish. To enable, set repository variable ARVAN_DEPLOY_ENABLED=true
-      # and secrets ARVAN_HOST / ARVAN_USER / ARVAN_PASSWORD (Settings -> Secrets
-      # and variables -> Actions). This is the only way a push can fix the live
-      # domain on its own — Arvancdn is not GitHub, so nothing else can reach it.
-      #
-      # `mirror --delete` is deliberate: leftover hashed files from a previous
-      # release are dead weight, and keeping the directory exactly equal to the
-      # artifact means what is live is precisely what CI verified. `-R` is lftp's
-      # reverse mode (local -> remote).
-      #
-      # ARVAN_HOST is the host[:port] only, with no scheme and no trailing path.
-      # If the account is FTPS-only, change `ftp:ssl-allow no` to
-      # `ftp:ssl-force yes` below.
-      #
-      # After uploading, the build verifies its own destination over HTTP, so a
-      # bad publish fails the run instead of being discovered in the browser.
-      - name: Publish to Arvancdn
-        if: ${{ vars.ARVAN_DEPLOY_ENABLED == 'true' }}
-        env:
-          ARVAN_HOST: ${{ secrets.ARVAN_HOST }}
-          ARVAN_USER: ${{ secrets.ARVAN_USER }}
-          ARVAN_PASSWORD: ${{ secrets.ARVAN_PASSWORD }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y lftp
-          lftp -c "
-            set ftp:ssl-allow no;
-            set net:max-retries 3;
-            set net:timeout 15;
-            open -u \"$ARVAN_USER\",\"$ARVAN_PASSWORD\" \"$ARVAN_HOST\";
-            mirror -R --delete --verbose dist/ .;
-            bye;
-          "
-          # Confirm the live document root now serves the root-based bundle.
-          # Retries briefly: the CDN can serve a stale index.html for a moment
-          # after the upload.
-          for i in 1 2 3 4 5 6; do
-            served=$(curl -s "https://panel.rohanian-ysr.ir/?cb=$RANDOM$i" \
-              | grep -o 'src="[^"]*index-[^"]*\.js"' | head -1)
-            echo "  attempt $i: ${served:-<no script tag found>}"
-            case "$served" in
-              src=\"/assets/*) echo "OK: domain is serving the root-base bundle"; exit 0 ;;
-            esac
-            sleep 10
-          done
-          echo "::error::panel.rohanian-ysr.ir is not serving the root-base bundle."
-          echo "The uploaded index.html still references a sub-path. Upload the"
-          echo "contents of dist/ (NOT dist-pages/) to the document root."
-          exit 1
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
 
   deploy:
     needs: [check, build]
@@ -212,3 +124,34 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+  # Confirms the live domain actually serves the root-based bundle.
+  #
+  # The deploy succeeding only means Pages accepted the artifact. This is the
+  # check that would have caught the sub-path/root mix-up, and it runs against
+  # the real origin (through the ArvanCloud CDN), so it also catches a stale
+  # cached index.html. Retries, because the CDN can serve the previous
+  # document for a short while after a publish.
+  smoke:
+    needs: [deploy]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify the live domain serves the root-based bundle
+        run: |
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            served=$(curl -s "https://panel.rohanian-ysr.ir/?cb=$RANDOM$i" \
+              | grep -o 'src="[^"]*index-[^"]*\.js"' | head -1)
+            echo "attempt $i: ${served:-<no script tag found>}"
+            case "$served" in
+              src=\"/assets/*)
+                echo "OK: the domain is serving the root-based bundle."
+                exit 0
+                ;;
+            esac
+            sleep 15
+          done
+          echo "::error::panel.rohanian-ysr.ir is NOT serving the root-based bundle."
+          echo "The published index.html still references a sub-path, so every asset"
+          echo "will 404. Check that the build job used VITE_BASE_PATH=/ (not"
+          echo "npm run build:pages) and that dist/CNAME is present in the artifact."
+          exit 1

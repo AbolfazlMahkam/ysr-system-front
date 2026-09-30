@@ -672,130 +672,116 @@ Use browser DevTools Network tab to:
 
 ## 🚀 Deployment
 
-### GitHub Pages (current target)
+### How the site is actually hosted
 
-The app is published to **two** hosts, which need different base paths, so there
-are two build targets:
+This is the part that is easy to get wrong, and getting it wrong is what caused
+the 404s. There is **one** origin, and it is GitHub Pages:
 
-| Host | URL | Base | Built by |
-| --- | --- | --- | --- |
-| Arvancdn (custom domain) | `https://panel.rohanian-ysr.ir` | `/` | `npm run build` → `dist/` |
-| GitHub Pages (project site) | `https://abolfazlmahkam.github.io/ysr-system-front` | `/ysr-system-front/` | `npm run build:pages` → `dist-pages/` (CI) |
+```
+panel.rohanian-ysr.ir
+  └─ ArvanCloud            CDN only (caching, TLS, WAF). NOT a file host.
+       └─ GitHub Pages     the origin — its responses carry X-GitHub-Request-Id
+            └─ artifact    whatever .github/workflows/deploy.yml deployed
+```
 
-A project site is served from a **sub-path**, so every asset URL, the router
-basename and the post-refresh redirect all have to carry `/ysr-system-front/`.
-The custom domain is served from the **root**. That is the only difference
-between the two builds — no component code changes. Changing a base means
-changing one value, not editing components.
+ArvanCloud's DNS points at `185.143.233.131` / `185.143.234.131`, not at GitHub,
+which makes it look like an independent host. It is not. The proof is in the
+response headers of the live domain:
 
-To reproduce a build locally:
+```
+X-GitHub-Request-Id: AFD2:2AD77F:...
+x-github-edge-region: fra
+X-Fastly-Request-ID: 94e2...
+Server: ArvanCloud
+```
+
+The site is published on a GitHub Pages **custom domain**, so Pages serves the
+artifact at the **domain root**, and the project-site URL merely redirects to it:
+
+```
+https://abolfazlmahkam.github.io/ysr-system-front/  ->  301  ->  panel.rohanian-ysr.ir/
+```
+
+Two consequences that matter:
+
+1. **There is nothing to upload.** No file copy, FTP push or manual step can
+   change the site. Pushing to `main` is the entire deploy.
+2. **There is only one live base, `/`.** The domain is served from the root, so
+   the deployed artifact must be built with `VITE_BASE_PATH=/`.
+
+### The build
 
 ```bash
-npm run build        # custom domain  -> dist/
-npm run build:pages  # project site   -> dist-pages/
+npm run build        # the live site      -> dist/      (base "/")
+npm run build:pages  # project site only  -> dist-pages/ (base "/ysr-system-front/")
 npm run preview      # serves the most recent build at its configured base
 ```
 
-Local development uses the project-site base, so `npm run dev` serves the app
-at <http://localhost:4000/ysr-system-front/> rather than `http://localhost:4000/`.
-That is intentional: it makes the sub-path layout that only exists in production
-visible during development.
+`npm run build:pages` exists only for the case where the CNAME is removed and
+Pages serves the project-site URL instead. It is **not** what the live site runs,
+and deploying it is what broke production: its `index.html` asks for
+`/ysr-system-front/assets/...` while Pages serves the files from `/assets/`, so
+the page loaded and then 404'd on every asset.
 
-**Deep links.** GitHub Pages cannot rewrite requests to `index.html`, so a
-refresh on `/ysr-system-front/admin/form-submissions` would 404. The build emits
-a byte-identical copy of `index.html` as `404.html`, which Pages serves *at the
+The build states its own destination rather than relying on memory — every build
+writes `_DEPLOY_TARGET.txt` into its output and logs the target:
+
+```
+[deploy target] https://panel.rohanian-ysr.ir (base /)
+```
+
+**Deep links.** GitHub Pages cannot rewrite a request to `index.html`, so
+refreshing on `/admin/form-submissions` would 404. The build emits a
+byte-identical copy of `index.html` as `404.html`, which Pages serves *at the
 requested URL* — react-router then sees the original path and boots normally.
 Unknown URLs land on the catch-all route in `src/pages/NotFoundPage.tsx`.
 
-### Publishing to `panel.rohanian-ysr.ir`
+### What CI does on every push
 
-The domain is served by **Arvancdn**, not GitHub Pages — its DNS points at
-`185.143.233.131` / `185.143.234.131`, not at GitHub. So the domain is *not* a
-Pages custom domain and **no CNAME is involved**. It is a static copy of `dist/`
-uploaded to that host.
-
-That also means the two URLs coexist: the project site keeps its own
-`/ysr-system-front/` base and the domain gets `/`. Neither displaces the other.
-
-To publish an update to the domain:
-
-```bash
-npm run build    # -> dist/ , base "/"
+```
+check   lint + type-check — hard gate, blocks the deploy
+build   npm run build (base /) -> verify -> write dist/CNAME -> upload
+deploy  publish to GitHub Pages
+smoke   re-fetch the live domain and assert it serves /assets/...
 ```
 
-Then upload the **contents of `dist/`** to the document root of the Arvanchn
-host. The whole directory matters, including the `assets/` folder and
-`404.html` — uploading only `index.html` leaves every asset 404ing, which is the
-exact failure mode a base mismatch produces.
+Push to `main` and the site is updated. No manual step, and nothing to download.
 
-> **Which directory? `dist/`, never `dist-pages/`.** This has been the cause of
-> the outage twice, so the build states its destination rather than relying on
-> memory. Every build writes `_DEPLOY_TARGET.txt` into its output and prints the
-> target to the log:
->
-> ```
->  [deploy target] https://panel.rohanian-ysr.ir (base /)              <- dist/
->  [deploy target] https://abolfazlmahkam.github.io/ysr-system-front   <- dist-pages/
-> ```
->
-> Uploading `dist-pages/` here yields a page that loads and then 404s on every
-> asset, because its `index.html` asks for `/ysr-system-front/assets/...` while
-> the files sit in `/assets/`.
+The `smoke` job is the one that would have caught this class of bug. A successful
+deploy only means Pages accepted the artifact; `smoke` checks the live origin
+through the CDN and fails the run if the published `index.html` still references
+a sub-path. It retries, since the CDN can serve the previous document briefly
+after a publish.
 
-**Always verify after uploading.** This one command catches a bad publish
-immediately, without needing to open the browser:
+To verify by hand at any time:
 
 ```bash
 curl -s https://panel.rohanian-ysr.ir/ | grep -o 'src="[^"]*index-[^"]*\.js"'
 ```
 
-Correct output starts with `src="/assets/` — no `/ysr-system-front/` prefix:
-
 ```
-src="/assets/index-DABTQWnS.js"          OK
-src="/ysr-system-front/assets/index-*.js" WRONG BUNDLE — you uploaded dist-pages/
+src="/assets/index-DABTQWnS.js"             OK
+src="/ysr-system-front/assets/index-*.js"   WRONG BUILD IS LIVE
 ```
 
-Note the CSS file is a poor signal: its hash is identical in both builds, because
+Do not judge this by the CSS file: its hash is identical in both builds, because
 `base` does not affect CSS. Only the `src=` script path distinguishes them.
 
-### CI builds both targets on every push
+### Settings
 
-`.github/workflows/deploy.yml` builds and verifies **both** artifacts on every
-push to `main`, so the bundle destined for each host is always produced by the
-same commit and can never be the wrong one:
+| Where | Name | Value | Why |
+| --- | --- | --- | --- |
+| Repo variable | `VITE_API_BASE_URL` | `https://api.rohanian-ysr.ir` | backend origin baked at build time |
+| Repo variable | `VITE_GOOGLE_CLIENT_ID` | `<id>.apps.googleusercontent.com` | Google OAuth |
+| Repo variable | `CUSTOM_DOMAIN` | `panel.rohanian-ysr.ir` | written to `dist/CNAME`; defaults to this if unset |
 
-| Job | Output | Destination |
-| --- | --- | --- |
-| `build` | `dist-pages/` (base `/ysr-system-front/`) | deployed to GitHub Pages |
-| `build-domain` | `dist/` (base `/`), attached as `UPLOAD-THIS-ONE-panel-rohanian-ysr.ir-dist` | upload to Arvancdn |
+The CNAME is written on every build, defaulting to the known domain, so clearing
+`CUSTOM_DOMAIN` cannot silently un-bind the site.
 
-A run therefore contains two zip files that both look like a release. **Download
-the one named `UPLOAD-THIS-ONE-panel-rohanian-ysr.ir-dist`** and upload its
-contents to the Arvancdn document root. The other one (`github-pages`) is the
-Pages bundle and belongs on GitHub, never on the domain.
-
-`build-domain` attaches `dist/` as a downloadable artifact on every run, so the
-correct bundle is always available even if the upload is not configured.
-
-It can also publish for you. To enable push-to-live, set repository **variable**
-`ARVAN_DEPLOY_ENABLED=true` and **secrets** `ARVAN_HOST`, `ARVAN_USER`,
-`ARVAN_PASSWORD` (Settings -> Secrets and variables -> Actions). The step is
-inert until that variable is set, so merging this cannot unexpectedly overwrite
-the live site. It mirrors with `--delete`, meaning the published directory is
-always exactly the artifact CI verified, and then re-fetches the live
-`index.html` to confirm the domain is serving the root-based bundle — so a bad
-publish fails the run instead of being discovered in a browser.
-
-This is the only mechanism that can fix the domain from a push. Arvancdn is not
-GitHub and its DNS points elsewhere, so with the upload left manual, every
-release depends on a person choosing the right zip.
-
-`check` (lint + type-check) is a hard gate: `deploy` depends on it, so a push
-that fails either one never reaches either host. It currently passes, but the
-API layer under `src/api` is still `.js` and its response bodies are typed `any`
-via the declarations in `src/types/api.ts` — see that file for why `allowJs` makes
-things worse and how to migrate off it.
+`check` is a hard gate: `deploy` depends on it, so a push that fails lint or
+type-check never reaches the site. The API layer under `src/api` is still `.js` and
+its response bodies are typed `any` via the declarations in `src/types/api.ts` —
+see that file for why `allowJs` makes things worse and how to migrate off it.
 
 > **How the two bases are kept apart.** `base` is baked into the bundle at build
 > time, so a single build can only target one host.
