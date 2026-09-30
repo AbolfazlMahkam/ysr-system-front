@@ -1,6 +1,6 @@
-name: Deploy to GitHub Pages
+name: Build and deploy
 
-# Every push to main publishes a new build. `workflow_dispatch` allows a
+# Every push to main publishes both build targets. `workflow_dispatch` allows a
 # re-deploy of the current commit without pushing a no-op commit.
 on:
   push:
@@ -19,6 +19,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Reports lint/type health without blocking a release.
+  #
+  # `continue-on-error` is deliberate and temporary: the tree already carries
+  # pre-existing lint and type errors (unused vars in src/pages/RegisterPage.tsx,
+  # FormStatistics.tsx and UsersPage.tsx, and untyped .js modules under src/api and
+  # src/utiles). Wiring this as a hard gate today would turn every push red and
+  # block the deploys below, which is a worse outcome than the debt being visible.
+  # Clear the debt, then drop continue-on-error to make this a real gate.
+  check:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run type-check
+
+  # ---- GitHub Pages project site: base "/ysr-system-front/" ----
   build:
     runs-on: ubuntu-latest
     steps:
@@ -57,11 +82,16 @@ jobs:
           VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
         run: npm run build:pages
 
+      # Belt-and-braces: the build already self-verifies via a Vite plugin, but
+      # re-asserting the expected base here means this job fails even if that
+      # plugin is ever removed or reordered.
+      - name: Verify the artifact is built for the project-site sub-path
+        run: npm run verify:dist-pages
+
       # Do NOT set CUSTOM_DOMAIN. panel.rohanian-ysr.ir is served by Arvancdn, not
       # by Pages, and its DNS does not point at GitHub. Emitting a CNAME would
       # make GitHub try to serve a domain it does not control, which breaks this
-      # project site. The domain gets its own build (npm run build) uploaded
-      # manually -- see the README.
+      # project site. The domain gets its own build — see the `build-domain` job.
       - name: Write CNAME
         if: ${{ vars.CUSTOM_DOMAIN != '' }}
         run: echo "${{ vars.CUSTOM_DOMAIN }}" > dist-pages/CNAME
@@ -71,8 +101,86 @@ jobs:
         with:
           path: dist-pages
 
+  # ---- Arvancdn custom domain: base "/" ----
+  #
+  # The domain is hosted by Arvancdn, whose DNS does not point at GitHub, so the
+  # Pages artifact can never be published there — it is built for the sub-path and
+  # would 404 on every asset. This job produces the correct artifact on every push
+  # and attaches it to the run, so the bundle that reaches Arvancdn is always the
+  # one built for it.
+  #
+  # The publish step is opt-in. Until ARVAN_DEPLOY_ENABLED is set to "true" the
+  # artifact is produced and downloadable but nothing is uploaded, so merging this
+  # change cannot unexpectedly overwrite the live site.
+  build-domain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        env:
+          # Stated explicitly rather than inherited from .env.production, so this
+          # job does not depend on a committed file staying correct.
+          VITE_BASE_PATH: /
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL || 'https://api.rohanian-ysr.ir' }}
+          VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
+        run: npm run build
+
+      - name: Verify the artifact is built for the domain root
+        run: npm run verify:dist
+
+      # Attached to the run either way, so the correct bundle is always available
+      # even when the upload below is not configured.
+      - name: Archive the custom-domain bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-domain
+          path: dist/
+          retention-days: 30
+
+      # Opt-in publish. To enable, set repository variable ARVAN_DEPLOY_ENABLED=true
+      # and secrets ARVAN_HOST / ARVAN_USER / ARVAN_PASSWORD (Settings -> Secrets
+      # and variables -> Actions).
+      #
+      # `mirror --delete` is deliberate: leftover hashed files from a previous
+      # release are dead weight, and keeping the directory exactly equal to the
+      # artifact means what is live is precisely what CI verified. `-R` is lftp's
+      # reverse mode (local -> remote).
+      #
+      # ARVAN_HOST is the host[:port] only, with no scheme and no trailing path.
+      # If the account is FTPS-only, change `ftp:ssl-allow no` to
+      # `ftp:ssl-force yes` below.
+      - name: Publish to Arvancdn
+        if: ${{ vars.ARVAN_DEPLOY_ENABLED == 'true' }}
+        env:
+          ARVAN_HOST: ${{ secrets.ARVAN_HOST }}
+          ARVAN_USER: ${{ secrets.ARVAN_USER }}
+          ARVAN_PASSWORD: ${{ secrets.ARVAN_PASSWORD }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          lftp -c "
+            set ftp:ssl-allow no;
+            set net:max-retries 3;
+            set net:timeout 15;
+            open -u \"$ARVAN_USER\",\"$ARVAN_PASSWORD\" \"$ARVAN_HOST\";
+            mirror -R --delete --verbose dist/ .;
+            bye;
+          "
+
   deploy:
-    needs: build
+    # Deliberately does NOT need `check`: that job is advisory (see above), and
+    # gating the release on pre-existing lint debt would block every deploy.
+    needs: [build]
     runs-on: ubuntu-latest
     environment:
       name: github-pages

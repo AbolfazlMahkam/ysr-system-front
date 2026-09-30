@@ -3,13 +3,22 @@
 # .dockerignore applies instead. Harmless either way.
 node_modules
 dist
+dist-pages
 build
 .turbo
 coverage
 *.log
-.env
-.env.*
-!.env.example
 .git
 .idea
 .vscode
+
+# NOTE: .env / .env.production are deliberately NOT ignored.
+#
+# They hold public, build-time config (VITE_BASE_PATH, VITE_API_BASE_URL) that is
+# committed on purpose precisely so CI and Docker can read it. Excluding them here
+# used to strip VITE_BASE_PATH from the build context, which made the image fall
+# back to vite.config.ts's DEFAULT_BASE and silently produce an artifact built for
+# the wrong host. If you add a secret, put it in .env.local (ignored by git) and
+# pass it as a runtime container env instead — never bake it into a VITE_ variable.
+.env.local
+.env.*.local

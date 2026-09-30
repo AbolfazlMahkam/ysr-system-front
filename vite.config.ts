@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import type { Plugin } from "vite";
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
@@ -17,7 +18,16 @@ import react from "@vitejs/plugin-react";
 // asset reference assume a directory-style base. Relative bases ("./") are NOT
 // usable here — this app uses deep routes such as /admin/form-submissions, and
 // a relative base would resolve assets against the current route segment.
-const DEFAULT_BASE = "/ysr-system-front/";
+//
+// The fallback is "/" and MUST stay "/". `base` is baked into the bundle at
+// build time, so a build that loses its VITE_BASE_PATH (excluded by a
+// .dockerignore, missing from a CI secret, forgotten in a PaaS build setting)
+// would otherwise silently fall back to the project-site sub-path. That artifact
+// is *internally consistent*, so nothing fails — but uploading it to the custom
+// domain yields an index.html that 404s on every asset. Defaulting to the
+// production host means a lost config produces a build that works, and the
+// sub-path stays an explicit opt-in via `npm run build:pages`.
+const DEFAULT_BASE = "/";
 
 /**
  * GitHub Pages has no server-side rewrite rules, so a hard refresh on a deep
@@ -50,6 +60,48 @@ function githubPagesSpaFallback(): Plugin {
   };
 }
 
+/**
+ * Fails the build when the emitted output does not match the configured `base`,
+ * or when the output directory is incomplete.
+ *
+ * Two failure modes are caught here:
+ *   - a partial publish (index.html uploaded without assets/)
+ *   - a relative base ("./"), which silently breaks deep routes
+ *
+ * What this CANNOT catch is a correct build aimed at the wrong host: a
+ * project-site build is internally consistent, so it verifies against its own
+ * base and passes. Only the job that owns a destination can assert the base that
+ * host requires, which is why CI runs `verify:dist` / `verify:dist-pages` with
+ * the expected base stated explicitly. Together with DEFAULT_BASE pointing at
+ * the production host, there is no longer a path where the wrong artifact is
+ * produced and published without a check seeing it.
+ */
+function verifyBuiltBase(): Plugin {
+  let outDir = "dist";
+  let base = "/";
+  return {
+    name: "verify-built-base",
+    apply: "build",
+    configResolved(config) {
+      outDir = config.build.outDir;
+      base = config.base;
+    },
+    // Runs after githubPagesSpaFallback so the directory is fully written.
+    closeBundle() {
+      const script = path.resolve(__dirname, "scripts/verify-base.mjs");
+      const result = spawnSync(process.execPath, [script, outDir, base], {
+        stdio: "inherit",
+      });
+      if (result.status !== 0) {
+        throw new Error(
+          `Build output does not match the configured base "${base}". Refusing to emit an ` +
+            `artifact that would 404 on the target host — see the errors above.`,
+        );
+      }
+    },
+  };
+}
+
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   // loadEnv merges .env / .env.local / .env.<mode> / .env.<mode>.local, and
@@ -60,7 +112,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     base,
-    plugins: [react(), githubPagesSpaFallback()],
+    plugins: [react(), githubPagesSpaFallback(), verifyBuiltBase()],
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "./src"),

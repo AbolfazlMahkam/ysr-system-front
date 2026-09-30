@@ -728,6 +728,32 @@ host. The whole directory matters, including the `assets/` folder and
 `404.html` — uploading only `index.html` leaves every asset 404ing, which is the
 exact failure mode a base mismatch produces.
 
+### CI builds both targets on every push
+
+`.github/workflows/deploy.yml` builds and verifies **both** artifacts on every
+push to `main`, so the bundle destined for each host is always produced by the
+same commit and can never be the wrong one:
+
+| Job | Output | Destination |
+| --- | --- | --- |
+| `build` | `dist-pages/` (base `/ysr-system-front/`) | deployed to GitHub Pages |
+| `build-domain` | `dist/` (base `/`), attached to the run as the `dist-domain` artifact | upload to Arvancdn |
+
+`build-domain` attaches `dist/` as a downloadable artifact on every run, so the
+correct bundle is always available even if the upload is not configured.
+
+It can also publish for you. To enable push-to-live, set repository **variable**
+`ARVAN_DEPLOY_ENABLED=true` and **secrets** `ARVAN_HOST`, `ARVAN_USER`,
+`ARVAN_PASSWORD` (Settings -> Secrets and variables -> Actions). The step is
+inert until that variable is set, so merging this cannot unexpectedly overwrite
+the live site. It mirrors with `--delete`, meaning the published directory is
+always exactly the artifact CI verified.
+
+> The `check` job (lint + type-check) is currently `continue-on-error` because
+> the tree carries pre-existing lint and type errors. It reports but does not
+> block, and `deploy` does not depend on it. Clear the debt, then remove the flag
+> to make it a real gate.
+
 > **How the two bases are kept apart.** `base` is baked into the bundle at build
 > time, so a single build can only target one host.
 > `.env.production` sets `VITE_BASE_PATH=/` and drives `npm run build`.
@@ -824,6 +850,55 @@ npm install
   match the host, and it must end with a trailing slash.
 - Hard-refresh a deep route: if it 404s, `dist/404.html` is missing. The build
   emits it automatically — check that a custom `build.outDir` still has it.
+
+**Every asset 404s but the page still renders (white screen, console full of 404s):**
+
+This is a **base/host mismatch**, and it is the single most damaging deploy error
+here because nothing fails at build time — `base` is baked into the bundle, so a
+project-site build is internally consistent and looks fine until it meets a
+root-hosted server.
+
+The signature: `index.html` loads (200) but requests
+`/ysr-system-front/assets/index-<hash>.js` and gets 404, while
+`/assets/index-<hash>.js` returns 200. You are serving a **sub-path build on a
+root host**, i.e. the wrong artifact.
+
+Fix — rebuild for the host you are actually publishing to, then upload the whole
+directory:
+
+| Publishing to | Command | Upload |
+| --- | --- | --- |
+| `panel.rohanian-ysr.ir` (root) | `npm run build` | contents of `dist/` |
+| GitHub Pages project site | `npm run build:pages` | contents of `dist-pages/` |
+
+This cannot ship silently any more. Three layers cover it, and it is worth
+knowing which layer catches what:
+
+1. **The build itself** runs `scripts/verify-base.mjs` as a Vite plugin
+   (`verifyBuiltBase` in `vite.config.ts`). It fails the build if a referenced
+   file is missing from the output (a partial upload) or if the base is relative
+   (`./`, which breaks deep routes). This covers `npm run build`,
+   `npm run build:pages` and the Dockerfile.
+2. **Each CI job** additionally asserts the base its destination requires —
+   `verify:dist` expects `/`, `verify:dist-pages` expects `/ysr-system-front/`.
+   This is the layer that catches the wrong artifact, because a build cannot know
+   which host it is about to be uploaded to; only the job that owns that host can.
+3. **`DEFAULT_BASE` is `/`**, not the sub-path. A build that loses its
+   `VITE_BASE_PATH` (stripped by a `.dockerignore`, missing from a CI variable,
+   absent from a PaaS build setting) falls back to the **production host**, which
+   is the safe direction. The sub-path is an explicit opt-in via
+   `npm run build:pages`.
+
+Check an artifact by hand at any time:
+
+```bash
+npm run verify:dist         # dist/ must be built for the root
+npm run verify:dist-pages   # dist-pages/ must be built for the sub-path
+```
+
+Layer 2 runs in CI, so the residual human step is only *uploading the right
+artifact*. Compare the `src=` line in the two `index.html` files if unsure:
+`/assets/...` is the domain, `/ysr-system-front/assets/...` is Pages.
 
 **CORS errors:**
 

@@ -7,6 +7,8 @@
     "dev": "vite --host",
     "build": "vite build",
     "build:pages": "vite build --base=/ysr-system-front/ --outDir dist-pages",
+    "verify:dist": "node scripts/verify-base.mjs dist /",
+    "verify:dist-pages": "node scripts/verify-base.mjs dist-pages /ysr-system-front/",
     "type-check": "tsc -b",
     "lint": "eslint .",
     "preview": "vite preview"
